@@ -158,10 +158,9 @@ async function assertAllowedDownloadUrl(url, settings, hop = 0) {
   }
 
   if (hostMatchesAllowList(hostname, allowList)) {
-    // Explicitly trusted by the user; still refuse embedded credentials.
-    await assertPublicHttpUrl(parsed, { checkDns: false }).catch((error) => {
-      if (/embedded credentials/.test(error.message)) throw error;
-    });
+    // Explicitly trusted by the user. Literal local/private addresses and embedded
+    // credentials are still refused; DNS is not pre-checked so internal hostnames work.
+    await assertPublicHttpUrl(parsed, { checkDns: false });
     return parsed;
   }
 

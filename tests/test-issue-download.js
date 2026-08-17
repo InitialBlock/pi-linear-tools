@@ -204,6 +204,12 @@ async function testUrlAllowListAndRedirects() {
   await assertAllowedDownloadUrl('https://eu.cdn.example.org/a', settings);
   await assert.rejects(assertAllowedDownloadUrl('https://other.example.com/a', settings), /only uploads.linear.app/);
   await assert.rejects(assertAllowedDownloadUrl('http://localhost:3000/a', settings), /only uploads.linear.app/);
+  // Even an explicit allow-list entry cannot open up loopback / private literals
+  const loose = { download_allowed_hosts: ['127.0.0.1', 'localhost', '10.0.0.5', 'metadata.google.internal'] };
+  await assert.rejects(assertAllowedDownloadUrl('http://127.0.0.1/a', loose), /local\/private/);
+  await assert.rejects(assertAllowedDownloadUrl('http://localhost/a', loose), /local\/private/);
+  await assert.rejects(assertAllowedDownloadUrl('http://10.0.0.5/a', loose), /local\/private/);
+  await assert.rejects(assertAllowedDownloadUrl('http://metadata.google.internal/a', loose), /local\/private/);
 
   // End-to-end: redirect from Linear to a non-allowed host is refused, nothing written
   await withTempDir(async (cwd) => {

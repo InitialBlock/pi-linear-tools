@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+Security hardening pass (fork: InitialBlock/pi-linear-tools).
+
+### Security
+- **Credentials no longer reach the log file**: request tracking keyed the raw API key / OAuth access token and wrote it to `~/.config/pi-linear-tools/pi-linear-tools.log` at the default log level. Tracker ids are now SHA-256 hashes, the logger redacts sensitive keys and `lin_api_`/`lin_oauth_` values (including nested payloads, error messages and stacks), and log dir/file are created `0700`/`0600` (existing files are tightened).
+- **OS keychain actually used for OAuth tokens**: token storage imported `keytar` while the dependency is `@github/keytar`, so tokens always fell back to the plaintext file. The correct module is imported now; the fallback file and `settings.json` are written owner-only.
+- **Attachment downloads restricted**: `linear_issue action=download` only fetches from `uploads.linear.app` (plus hosts in the new `download_allowed_hosts` setting / `--download-allowed-hosts` flag), refuses local/private addresses, validates each redirect hop, rejects hidden (dot-prefixed) destination directories such as `.pi/extensions` or `.git`, checks the real path stays inside the working directory, and never overwrites through symlinks.
+- **Image fetching hardened**: markdown/HTML image extraction is linear-time (previously a ~10 KB crafted comment stalled the agent for seconds), image URLs pointing at local/private/metadata addresses are refused (literal and via DNS pre-check), redirects are re-validated per hop, the credential is only attached for `uploads.linear.app` hops, and bodies are read through a streaming byte cap.
+
+### Configuration
+- New setting `download_allowed_hosts` (array of hostnames or `*.suffix` patterns), settable via `/linear-tools-config --download-allowed-hosts host1,host2` and `pi-linear-tools config --download-allowed-hosts host1,host2`.
+
+### Tests
+- Added `test-log-redaction`, `test-token-store`, `test-url-safety`, `test-image-fetch`; extended `test-issue-download` and `test-settings`.
+
 ## v0.7.3 (2026-07-28)
 
 Patch release that fixes Linear issue-relation updates for OAuth users.
