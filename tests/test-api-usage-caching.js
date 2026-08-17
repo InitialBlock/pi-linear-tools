@@ -506,7 +506,6 @@ async function run() {
 
     const client = {
       apiKey: 'lin_test_raw_key',
-      __piLinearTrackerKey: 'lin_test_raw_key',
       rawRequest: async (_query, variables) => {
         rawRequestCalls += 1;
         if (variables.id !== issueId) {

@@ -6,6 +6,7 @@
  */
 
 import { warn, info, debug } from './logger.js';
+import { getClientAuthToken } from './linear-client.js';
 
 const CACHE_TTL_MS = {
   viewer: 30_000,
@@ -2948,8 +2949,8 @@ function isLinearUploadUrl(url) {
 }
 
 function getLinearAuthHeaderValue(client, mode = 'raw') {
-  const token = client?.__piLinearTrackerKey || client?.apiKey || null;
-  if (!token || token === 'default') return null;
+  const token = getClientAuthToken(client);
+  if (!token) return null;
   return mode === 'bearer' ? `Bearer ${token}` : token;
 }
 

@@ -29,7 +29,9 @@ function getTokenFilePath() {
 
 function normalizeTokens(tokens, source = 'unknown') {
   if (!tokens || !tokens.accessToken || !tokens.refreshToken || !tokens.expiresAt) {
-    logError(`Invalid token structure in ${source}`, { tokens });
+    // Never log the token record itself; report only which fields are missing.
+    const missing = ['accessToken', 'refreshToken', 'expiresAt'].filter((field) => !tokens?.[field]);
+    logError(`Invalid token structure in ${source}`, { missingFields: missing, present: Boolean(tokens) });
     return null;
   }
 
