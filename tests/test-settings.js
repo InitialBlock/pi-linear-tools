@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, stat, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -57,6 +57,17 @@ async function testSaveAndLoad() {
     assert.equal(loaded.debug_reload, undefined);
     assert.equal(loaded.allow_overwrite_files, false);
     assert.equal(loaded.projects['project-1'].scope.team, 'ENG');
+
+    if (process.platform !== 'win32') {
+      const settingsPath = join(process.env.HOME, '.pi', 'agent', 'extensions', 'pi-linear-tools', 'settings.json');
+      const mode = (await stat(settingsPath)).mode & 0o777;
+      assert.equal(mode, 0o600, `settings.json should be owner-only, got ${mode.toString(8)}`);
+      // Pre-existing loose permissions get tightened on the next save
+      await chmod(settingsPath, 0o644);
+      await saveSettings(settings);
+      const modeAfter = (await stat(settingsPath)).mode & 0o777;
+      assert.equal(modeAfter, 0o600, `settings.json should be re-tightened to 0600, got ${modeAfter.toString(8)}`);
+    }
   });
 }
 

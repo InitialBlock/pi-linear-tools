@@ -3,7 +3,7 @@
  * Reads configuration from ~/.pi/agent/extensions/pi-linear-tools/settings.json
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { debug, warn, error as logError } from './logger.js';
@@ -291,7 +291,12 @@ export async function saveSettings(settings) {
     throw new Error(`Cannot save invalid settings: ${validation.errors.join('; ')}`);
   }
 
-  await mkdir(parentDir, { recursive: true });
-  await writeFile(settingsPath, `${JSON.stringify(migrated, null, 2)}\n`, 'utf-8');
+  // settings.json may contain the Linear API key: keep it owner-only.
+  await mkdir(parentDir, { recursive: true, mode: 0o700 });
+  await writeFile(settingsPath, `${JSON.stringify(migrated, null, 2)}\n`, { encoding: 'utf-8', mode: 0o600 });
+  if (process.platform !== 'win32') {
+    // writeFile's mode only applies on creation; tighten files written by earlier versions.
+    await chmod(settingsPath, 0o600).catch(() => {});
+  }
   return settingsPath;
 }
