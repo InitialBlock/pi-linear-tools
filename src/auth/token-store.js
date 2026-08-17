@@ -6,7 +6,7 @@
  * and supports environment variables for CI/headless environments.
  */
 
-import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink, chmod } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { debug, warn, error as logError } from '../logger.js';
 
@@ -29,7 +29,9 @@ function getTokenFilePath() {
 
 function normalizeTokens(tokens, source = 'unknown') {
   if (!tokens || !tokens.accessToken || !tokens.refreshToken || !tokens.expiresAt) {
-    logError(`Invalid token structure in ${source}`, { tokens });
+    // Never log the token record itself; report only which fields are missing.
+    const missing = ['accessToken', 'refreshToken', 'expiresAt'].filter((field) => !tokens?.[field]);
+    logError(`Invalid token structure in ${source}`, { missingFields: missing, present: Boolean(tokens) });
     return null;
   }
 
@@ -72,10 +74,24 @@ async function writeTokensToFile(tokenData) {
 
   await mkdir(parentDir, { recursive: true, mode: 0o700 });
   await writeFile(tokenFilePath, tokenData, { encoding: 'utf-8', mode: 0o600 });
+  if (process.platform !== 'win32') {
+    // writeFile's mode only applies on creation; make sure pre-existing files are owner-only too.
+    await chmod(tokenFilePath, 0o600).catch(() => {});
+  }
 
   debug('Stored OAuth tokens in fallback file storage because keychain is unavailable', {
     path: tokenFilePath,
   });
+}
+
+/**
+ * Override the keychain implementation (TEST ONLY).
+ * Pass a keytar-compatible object, `false` to force file fallback, or `null` to reset.
+ * @param {object|false|null} impl
+ */
+export function _setKeytarModuleForTests(impl) {
+  keytarModule = impl;
+  inMemoryTokens = null;
 }
 
 /**
@@ -88,16 +104,28 @@ async function isKeytarAvailable() {
     return keytarModule !== false;
   }
 
-  try {
-    const module = await import('keytar');
-    keytarModule = module.default;
-    debug('keytar module loaded successfully');
-    return true;
-  } catch (error) {
-    debug('keytar module not available, using fallback storage', { error: error.message });
-    keytarModule = false;
-    return false;
+  // The declared dependency is @github/keytar (GitHub's maintained fork of keytar).
+  // Also accept plain `keytar` when present so consumers can swap implementations.
+  const candidates = ['@github/keytar', 'keytar'];
+  let lastError = null;
+  for (const specifier of candidates) {
+    try {
+      const module = await import(specifier);
+      const impl = module.default || module;
+      if (typeof impl?.getPassword === 'function' && typeof impl?.setPassword === 'function') {
+        keytarModule = impl;
+        debug('keytar module loaded successfully', { specifier });
+        return true;
+      }
+      lastError = new Error(`${specifier} does not expose a keytar-compatible API`);
+    } catch (error) {
+      lastError = error;
+    }
   }
+
+  debug('keytar module not available, using fallback storage', { error: lastError?.message });
+  keytarModule = false;
+  return false;
 }
 
 /**

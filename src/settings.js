@@ -3,7 +3,7 @@
  * Reads configuration from ~/.pi/agent/extensions/pi-linear-tools/settings.json
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { debug, warn, error as logError } from './logger.js';
@@ -23,6 +23,7 @@ export function getDefaultSettings() {
     projects: {},
     rateLimitDebug: false, // Enable detailed rate limit info per tool call
     allow_overwrite_files: false, // Require explicit opt-in before tools can overwrite local files
+    download_allowed_hosts: [], // Extra hosts attachment downloads may fetch from (uploads.linear.app is always allowed)
   };
 }
 
@@ -121,6 +122,11 @@ function migrateSettings(settings) {
   // Ensure local file overwrite guard is disabled by default
   if (migrated.allow_overwrite_files === undefined) {
     migrated.allow_overwrite_files = false;
+  }
+
+  // Ensure download host allow-list is an array
+  if (!Array.isArray(migrated.download_allowed_hosts)) {
+    migrated.download_allowed_hosts = [];
   }
 
   // Migrate project scopes
@@ -238,6 +244,15 @@ export function validateSettings(settings) {
     errors.push('settings.allow_overwrite_files must be a boolean');
   }
 
+  // Validate download host allow-list
+  if (settings.download_allowed_hosts !== undefined) {
+    if (!Array.isArray(settings.download_allowed_hosts)) {
+      errors.push('settings.download_allowed_hosts must be an array of hostnames');
+    } else if (settings.download_allowed_hosts.some((entry) => typeof entry !== 'string' || !entry.trim())) {
+      errors.push('settings.download_allowed_hosts entries must be non-empty strings');
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }
 
@@ -291,7 +306,12 @@ export async function saveSettings(settings) {
     throw new Error(`Cannot save invalid settings: ${validation.errors.join('; ')}`);
   }
 
-  await mkdir(parentDir, { recursive: true });
-  await writeFile(settingsPath, `${JSON.stringify(migrated, null, 2)}\n`, 'utf-8');
+  // settings.json may contain the Linear API key: keep it owner-only.
+  await mkdir(parentDir, { recursive: true, mode: 0o700 });
+  await writeFile(settingsPath, `${JSON.stringify(migrated, null, 2)}\n`, { encoding: 'utf-8', mode: 0o600 });
+  if (process.platform !== 'win32') {
+    // writeFile's mode only applies on creation; tighten files written by earlier versions.
+    await chmod(settingsPath, 0o600).catch(() => {});
+  }
   return settingsPath;
 }

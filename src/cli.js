@@ -47,6 +47,7 @@ import {
   executeMilestoneDelete,
 } from './handlers.js';
 import { withMilestoneScopeHint } from './error-hints.js';
+import { parseHostList } from './shared.js';
 
 // ===== ARGUMENT PARSING =====
 
@@ -168,6 +169,9 @@ Other commands:
   config --default-team <key>   Set default team
   config --allow-overwrite-files true|false
                                 Allow issue download overwrites when requested
+  config --download-allowed-hosts host1,host2
+                                Extra hosts attachment downloads may fetch from
+                                (uploads.linear.app always allowed; "" resets)
 
 Auth Actions:
   login    Authenticate with Linear via OAuth 2.0
@@ -760,6 +764,7 @@ async function handleConfig(args) {
   const projectTeam = readFlag(args, '--team');
   const projectName = readFlag(args, '--project');
   const allowOverwriteFiles = readFlag(args, '--allow-overwrite-files');
+  const downloadAllowedHosts = readFlag(args, '--download-allowed-hosts');
 
   if (apiKey) {
     const settings = await loadSettings();
@@ -789,6 +794,19 @@ async function handleConfig(args) {
     settings.allow_overwrite_files = enabled;
     await saveSettings(settings);
     console.log(`File overwrite guard ${enabled ? 'allows overwrites' : 'blocks overwrites'}`);
+    return;
+  }
+
+  if (downloadAllowedHosts !== undefined) {
+    const hosts = parseHostList(downloadAllowedHosts);
+    const settings = await loadSettings();
+    settings.download_allowed_hosts = hosts;
+    await saveSettings(settings);
+    console.log(
+      hosts.length
+        ? `Attachment downloads allowed from: uploads.linear.app, ${hosts.join(', ')}`
+        : 'Attachment downloads restricted to uploads.linear.app'
+    );
     return;
   }
 
@@ -822,13 +840,15 @@ async function handleConfig(args) {
   LINEAR_API_KEY: ${hasKey ? 'configured' : 'not set'} (source: ${keySource})
   Default team: ${settings.defaultTeam || 'not set'}
   Allow overwrite files: ${settings.allow_overwrite_files ? 'enabled' : 'disabled'}
+  Download allowed hosts: uploads.linear.app${(settings.download_allowed_hosts || []).length ? ', ' + settings.download_allowed_hosts.join(', ') : ''}
   Project team mappings: ${Object.keys(settings.projects || {}).length}
 
 Commands:
   pi-linear-tools config --api-key lin_xxx
   pi-linear-tools config --default-team ENG
   pi-linear-tools config --team ENG --project MyProject
-  pi-linear-tools config --allow-overwrite-files true|false`);
+  pi-linear-tools config --allow-overwrite-files true|false
+  pi-linear-tools config --download-allowed-hosts host1,host2`);
 }
 
 // ===== ISSUE HANDLERS =====

@@ -6,6 +6,14 @@
  */
 
 import { warn, info, debug } from './logger.js';
+import { getClientAuthToken } from './linear-client.js';
+import {
+  parseHttpUrl,
+  isLinearUploadHost,
+  assertPublicHttpUrl,
+  fetchWithSafeRedirects,
+  readBodyWithLimit,
+} from './url-safety.js';
 
 const CACHE_TTL_MS = {
   viewer: 30_000,
@@ -2911,19 +2919,33 @@ export async function fetchIssueDetails(client, issueRef, options = {}) {
   }, 'fetchIssueDetails');
 }
 
-function extractMarkdownImages(markdown, source) {
+// Issue/comment markdown is written by arbitrary workspace members. Keep the
+// scanners linear-time (bounded quantifiers, two-stage HTML matching) and cap
+// how much text is scanned so a crafted comment cannot stall the agent.
+const MAX_IMAGE_SCAN_CHARS = 512 * 1024;
+const MARKDOWN_IMAGE_PATTERN = /!\[([^\]\n]{0,512})\]\(([^\s()<>]{1,2048})(?:\s+"[^"\n]{0,512}")?\)/g;
+const HTML_IMG_TAG_PATTERN = /<img\b([^<>]{0,4096})>/gi;
+const HTML_IMG_SRC_PATTERN = /\bsrc\s*=\s*(?:"([^"<>]{1,2048})"|'([^'<>]{1,2048})')/i;
+
+export function extractMarkdownImages(markdown, source) {
   if (!markdown || typeof markdown !== 'string') return [];
 
+  const text = markdown.length > MAX_IMAGE_SCAN_CHARS ? markdown.slice(0, MAX_IMAGE_SCAN_CHARS) : markdown;
   const images = [];
-  const markdownImagePattern = /!\[([^\]]*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)/g;
-  const htmlImagePattern = /<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi;
 
+  MARKDOWN_IMAGE_PATTERN.lastIndex = 0;
   let match;
-  while ((match = markdownImagePattern.exec(markdown)) !== null) {
+  while ((match = MARKDOWN_IMAGE_PATTERN.exec(text)) !== null) {
     images.push({ alt: match[1] || null, url: match[2], source });
   }
-  while ((match = htmlImagePattern.exec(markdown)) !== null) {
-    images.push({ alt: null, url: match[1], source });
+
+  HTML_IMG_TAG_PATTERN.lastIndex = 0;
+  while ((match = HTML_IMG_TAG_PATTERN.exec(text)) !== null) {
+    const srcMatch = HTML_IMG_SRC_PATTERN.exec(match[1]);
+    const src = srcMatch ? (srcMatch[1] || srcMatch[2]) : null;
+    if (src) {
+      images.push({ alt: null, url: src, source });
+    }
   }
 
   return images;
@@ -2938,36 +2960,48 @@ function isImageUrl(url) {
   }
 }
 
-function isLinearUploadUrl(url) {
-  try {
-    const hostname = new URL(url).hostname.toLowerCase();
-    return hostname === 'uploads.linear.app' || hostname.endsWith('.uploads.linear.app');
-  } catch {
-    return false;
-  }
-}
-
 function getLinearAuthHeaderValue(client, mode = 'raw') {
-  const token = client?.__piLinearTrackerKey || client?.apiKey || null;
-  if (!token || token === 'default') return null;
+  const token = getClientAuthToken(client);
+  if (!token) return null;
   return mode === 'bearer' ? `Bearer ${token}` : token;
 }
 
-async function fetchImageUrl(client, url, options = {}) {
-  const { maxBytes = 10 * 1024 * 1024 } = options;
-  const attempts = [{ headers: {} }];
+/**
+ * Image URLs come from Linear-controlled markdown: allow public http(s) hosts only,
+ * never local/private addresses, and re-check every redirect hop.
+ */
+async function assertAllowedImageUrl(url, hop = 0) {
+  const parsed = url instanceof URL ? url : parseHttpUrl(url);
+  try {
+    await assertPublicHttpUrl(parsed, { checkDns: true });
+  } catch (error) {
+    const where = hop > 0 ? ` (redirect hop ${hop})` : '';
+    throw new Error(`${error.message}${where}`);
+  }
+  return parsed;
+}
 
-  if (isLinearUploadUrl(url)) {
+export async function fetchImageUrl(client, url, options = {}) {
+  const { maxBytes = 10 * 1024 * 1024, fetchImpl = globalThis.fetch } = options;
+  const attempts = [{ auth: null }];
+
+  const initial = await assertAllowedImageUrl(url, 0);
+  if (isLinearUploadHost(initial.hostname)) {
     const rawAuth = getLinearAuthHeaderValue(client, 'raw');
     const bearerAuth = getLinearAuthHeaderValue(client, 'bearer');
-    if (rawAuth) attempts.push({ headers: { authorization: rawAuth } });
-    if (bearerAuth) attempts.push({ headers: { authorization: bearerAuth } });
+    if (rawAuth) attempts.push({ auth: rawAuth });
+    if (bearerAuth) attempts.push({ auth: bearerAuth });
   }
 
   let lastError = null;
   for (const attempt of attempts) {
     try {
-      const response = await fetch(url, { headers: attempt.headers, redirect: 'follow' });
+      const { response } = await fetchWithSafeRedirects(initial, {
+        fetchImpl,
+        validate: (hopUrl, hop) => assertAllowedImageUrl(hopUrl, hop),
+        // Credentials only ever go to Linear's upload host, even after redirects.
+        headersFor: (hopUrl) => (attempt.auth && isLinearUploadHost(hopUrl.hostname) ? { authorization: attempt.auth } : {}),
+      });
       if (!response.ok) {
         lastError = new Error(`HTTP ${response.status} ${response.statusText}`);
         continue;
@@ -2979,14 +3013,14 @@ async function fetchImageUrl(client, url, options = {}) {
         continue;
       }
 
-      const contentLength = Number(response.headers.get('content-length') || 0);
-      if (contentLength > maxBytes) {
-        throw new Error(`Image is too large (${contentLength} bytes, max ${maxBytes})`);
-      }
-
-      const buffer = Buffer.from(await response.arrayBuffer());
-      if (buffer.length > maxBytes) {
-        throw new Error(`Image is too large (${buffer.length} bytes, max ${maxBytes})`);
+      let buffer;
+      try {
+        buffer = await readBodyWithLimit(response, maxBytes);
+      } catch (error) {
+        if (/exceeds maxBytes/.test(error?.message || '')) {
+          throw new Error(`Image is too large (max ${maxBytes} bytes)`);
+        }
+        throw error;
       }
 
       return {
@@ -3030,7 +3064,7 @@ export async function fetchIssueImages(client, issueRef, options = {}) {
     for (const candidate of uniqueCandidates) {
       try {
         // eslint-disable-next-line no-await-in-loop
-        const image = await fetchImageUrl(client, candidate.url, { maxBytes });
+        const image = await fetchImageUrl(client, candidate.url, { maxBytes, fetchImpl: options.fetchImpl });
         images.push({ ...candidate, ...image });
       } catch (error) {
         failures.push({ ...candidate, error: error?.message || String(error) });

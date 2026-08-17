@@ -5,6 +5,7 @@
  * Supports both API key and OAuth token authentication.
  */
 
+import { createHash } from 'node:crypto';
 import { LinearClient } from '@linear/sdk';
 import { debug, warn, info } from './logger.js';
 
@@ -28,12 +29,36 @@ let globalRateLimitResetAt = null;
 const REQUEST_SUMMARY_INTERVAL = 50;
 const REQUEST_SUMMARY_MIN_MS = 15000;
 
+/**
+ * Derive an opaque, non-reversible tracker id from a credential.
+ * The raw API key / OAuth token must never be used as a map key that ends up
+ * in logs or diagnostics, so we hash it.
+ * @param {string|null|undefined} apiKey
+ * @returns {string}
+ */
 function getTrackerKey(apiKey) {
-  return apiKey || 'default';
+  if (!apiKey) return 'default';
+  return `k_${createHash('sha256').update(String(apiKey), 'utf8').digest('hex').slice(0, 16)}`;
+}
+
+/**
+ * Read the raw credential attached to a Linear client.
+ * The SDK keeps it in `options.headers.Authorization`; test doubles may expose `apiKey` directly.
+ * Kept out of tracker keys/logs; only used where the credential itself is required
+ * (e.g. authenticated fetches to uploads.linear.app).
+ * @param {object} client
+ * @returns {string|null}
+ */
+export function getClientAuthToken(client) {
+  const headers = client?.options?.headers || {};
+  const headerValue = headers.Authorization ?? headers.authorization ?? null;
+  const fromHeader = typeof headerValue === 'string' ? headerValue.replace(/^Bearer\s+/i, '') : null;
+  const token = fromHeader || client?.options?.apiKey || client?.apiKey || null;
+  return typeof token === 'string' && token ? token : null;
 }
 
 function getTrackerKeyFromClient(client) {
-  return client?.__piLinearTrackerKey || client?.apiKey || 'default';
+  return client?.__piLinearTrackerKey || getTrackerKey(getClientAuthToken(client));
 }
 
 function parseHeaderNumber(value) {

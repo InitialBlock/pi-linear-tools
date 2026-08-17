@@ -115,3 +115,31 @@ export function readFlag(args, flag) {
   if (idx >= 0 && idx + 1 < args.length) return args[idx + 1];
   return undefined;
 }
+
+/**
+ * Parse a comma/space separated host list flag into normalized hostnames.
+ * Accepts bare hosts, "*.suffix" wildcards, or full URLs (hostname is extracted).
+ * @param {string|undefined} value
+ * @returns {string[]}
+ */
+export function parseHostList(value) {
+  if (value === undefined || value === null) return [];
+  const seen = new Set();
+  const hosts = [];
+  for (const raw of String(value).split(/[,\s]+/)) {
+    let host = raw.trim().toLowerCase();
+    if (!host) continue;
+    if (host.includes('://')) {
+      try {
+        host = new URL(host).hostname;
+      } catch {
+        continue;
+      }
+    }
+    host = host.replace(/\/.*$/, '').replace(/:\d+$/, '');
+    if (!host || seen.has(host)) continue;
+    seen.add(host);
+    hosts.push(host);
+  }
+  return hosts;
+}

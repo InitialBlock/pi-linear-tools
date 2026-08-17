@@ -786,7 +786,7 @@ async function testRateLimitDebugIncludesRateLimitInResult() {
             ]),
           }),
         },
-        __piLinearTrackerKey: 'lin_test',
+        apiKey: 'lin_test',
       };
 
       setTestClientFactory(() => mockClient);
@@ -842,7 +842,7 @@ async function testRateLimitDebugExcludesRateLimitFromResult() {
             ]),
           }),
         },
-        __piLinearTrackerKey: 'lin_test',
+        apiKey: 'lin_test',
       };
 
       setTestClientFactory(() => mockClient);

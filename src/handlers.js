@@ -6,7 +6,7 @@
  */
 
 import path from 'path';
-import { mkdir, open, unlink } from 'node:fs/promises';
+import { mkdir, open, unlink, realpath, lstat } from 'node:fs/promises';
 import {
   prepareIssueStart,
   setIssueState,
@@ -48,6 +48,13 @@ import {
 } from './linear.js';
 import { withIssueRelationScopeHint } from './error-hints.js';
 import { debug } from './logger.js';
+import {
+  parseHttpUrl,
+  isLinearUploadHost,
+  hostMatchesAllowList,
+  assertPublicHttpUrl,
+  fetchWithSafeRedirects,
+} from './url-safety.js';
 
 function toTextResult(text, details = {}) {
   return {
@@ -96,7 +103,7 @@ function hasValue(value) {
 
 function resolveSafeRelativeDirectory(directory, cwd = process.cwd()) {
   const requested = ensureNonEmpty(directory, 'directory');
-  if (path.isAbsolute(requested)) {
+  if (path.isAbsolute(requested) || /^[\\/]/.test(requested) || /^[A-Za-z]:/.test(requested)) {
     throw new Error('Download directory must be a relative path');
   }
 
@@ -108,7 +115,60 @@ function resolveSafeRelativeDirectory(directory, cwd = process.cwd()) {
     throw new Error('Download directory must stay within the current working directory');
   }
 
+  // Refuse hidden directories (.git, .pi/extensions, .claude, ...): downloaded content is
+  // untrusted and must never land somewhere tooling auto-loads or executes from.
+  const segments = relative.split(path.sep).filter(Boolean);
+  if (segments.some((segment) => segment.startsWith('.'))) {
+    throw new Error('Download directory must not contain hidden (dot-prefixed) path segments');
+  }
+
   return resolvedDirectory;
+}
+
+/**
+ * After the destination directory exists, make sure it (following symlinks)
+ * still lives under the working directory.
+ */
+async function assertRealPathWithinCwd(directory, cwd = process.cwd()) {
+  const [realDir, realCwd] = await Promise.all([realpath(directory), realpath(cwd)]);
+  const relative = path.relative(realCwd, realDir);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error('Download directory resolves outside the current working directory (symlink?)');
+  }
+}
+
+/**
+ * Attachment URLs are workspace-member controlled. Only fetch from Linear's own
+ * upload host (or hosts the user explicitly allow-listed), never from local or
+ * private addresses, and re-check on every redirect hop.
+ */
+function getDownloadAllowedHosts(settings) {
+  const list = settings?.download_allowed_hosts;
+  return Array.isArray(list) ? list.filter((entry) => typeof entry === 'string' && entry.trim()) : [];
+}
+
+async function assertAllowedDownloadUrl(url, settings, hop = 0) {
+  const parsed = url instanceof URL ? url : parseHttpUrl(url);
+  const allowList = getDownloadAllowedHosts(settings);
+  const hostname = parsed.hostname;
+
+  if (isLinearUploadHost(hostname)) {
+    await assertPublicHttpUrl(parsed, { checkDns: true });
+    return parsed;
+  }
+
+  if (hostMatchesAllowList(hostname, allowList)) {
+    // Explicitly trusted by the user. Literal local/private addresses and embedded
+    // credentials are still refused; DNS is not pre-checked so internal hostnames work.
+    await assertPublicHttpUrl(parsed, { checkDns: false });
+    return parsed;
+  }
+
+  const where = hop > 0 ? `redirect target (hop ${hop})` : 'attachment URL';
+  throw new Error(
+    `Refusing to download from ${where} host "${hostname}": only uploads.linear.app is allowed by default. ` +
+    'Add trusted hosts with /linear-tools-config --download-allowed-hosts host1,host2 (or the download_allowed_hosts setting).'
+  );
 }
 
 function sanitizeDownloadFilename(value) {
@@ -240,6 +300,17 @@ async function writeResponseBodyToFile(response, filePath, options) {
   let fileHandle;
   let bytesWritten = 0;
 
+  if (overwrite) {
+    // 'w' follows symlinks; never overwrite through a symlinked leaf.
+    const existing = await lstat(filePath).catch(() => null);
+    if (existing?.isSymbolicLink()) {
+      throw new Error(`Destination is a symlink, refusing to overwrite: ${filePath}`);
+    }
+    if (existing && !existing.isFile()) {
+      throw new Error(`Destination exists and is not a regular file: ${filePath}`);
+    }
+  }
+
   try {
     fileHandle = await open(filePath, flags);
   } catch (err) {
@@ -289,6 +360,8 @@ export const issueDownloadInternals = {
   resolveSafeDestinationPath,
   selectIssueAttachment,
   normalizeMaxBytes,
+  assertAllowedDownloadUrl,
+  getDownloadAllowedHosts,
 };
 
 // ===== GIT OPERATIONS (for issue start) =====
@@ -544,16 +617,24 @@ export async function executeIssueDownload(client, params, options = {}) {
   const issueData = await fetchIssueDetails(client, issue, { includeComments: false });
   const attachment = selectIssueAttachment(issueData.attachments, params);
   const filename = filenameFromAttachment(attachment, params.filename);
-  const destination = resolveSafeDestinationPath(directory, filename, options.cwd || process.cwd());
+  const cwd = options.cwd || process.cwd();
+  const destination = resolveSafeDestinationPath(directory, filename, cwd);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
 
   if (typeof fetchImpl !== 'function') {
     throw new Error('Fetch API is not available in this Node.js runtime');
   }
 
-  await mkdir(destination.directory, { recursive: true });
+  // Validate the source URL before touching the filesystem.
+  await assertAllowedDownloadUrl(attachment.url, settings, 0);
 
-  const response = await fetchImpl(attachment.url, { redirect: 'follow' });
+  await mkdir(destination.directory, { recursive: true });
+  await assertRealPathWithinCwd(destination.directory, cwd);
+
+  const { response } = await fetchWithSafeRedirects(attachment.url, {
+    fetchImpl,
+    validate: (hopUrl, hop) => assertAllowedDownloadUrl(hopUrl, settings, hop),
+  });
   if (!response?.ok) {
     const status = response?.status ? `HTTP ${response.status}` : 'request failed';
     throw new Error(`Failed to download attachment "${attachment.title}": ${status}`);

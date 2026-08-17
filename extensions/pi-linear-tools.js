@@ -6,7 +6,7 @@ import {
   fetchTeams,
   fetchWorkspaces,
 } from '../src/linear.js';
-import { isPiCodingAgentRoot, findPiCodingAgentRoot, importFromPiRoot, parseArgs, readFlag } from '../src/shared.js';
+import { isPiCodingAgentRoot, findPiCodingAgentRoot, importFromPiRoot, parseArgs, readFlag, parseHostList } from '../src/shared.js';
 
 async function importPiCodingAgent() {
   try {
@@ -775,7 +775,7 @@ async function registerLinearTools(pi) {
         },
         directory: {
           type: 'string',
-          description: 'Relative destination directory for attachment downloads. Missing directories are created.',
+          description: 'Relative destination directory for attachment downloads (no hidden/dot-prefixed segments). Missing directories are created. Only attachments hosted on uploads.linear.app (or hosts in download_allowed_hosts) can be downloaded.',
         },
         filename: {
           type: 'string',
@@ -1248,6 +1248,7 @@ export default async function piLinearToolsExtension(pi) {
       const projectName = readFlag(args, '--project');
       const rateLimitDebug = readFlag(args, '--rate-limit-debug');
       const allowOverwriteFiles = readFlag(args, '--allow-overwrite-files');
+      const downloadAllowedHosts = readFlag(args, '--download-allowed-hosts');
 
       if (apiKey) {
         const settings = await loadSettings();
@@ -1286,6 +1287,22 @@ export default async function piLinearToolsExtension(pi) {
         await saveSettings(settings);
         if (ctx?.hasUI) {
           ctx.ui.notify(`File overwrite guard ${enabled ? 'allows overwrites' : 'blocks overwrites'}`, 'info');
+        }
+        return;
+      }
+
+      if (downloadAllowedHosts !== undefined) {
+        const settings = await loadSettings();
+        const hosts = parseHostList(downloadAllowedHosts);
+        settings.download_allowed_hosts = hosts;
+        await saveSettings(settings);
+        if (ctx?.hasUI) {
+          ctx.ui.notify(
+            hosts.length
+              ? `Attachment downloads allowed from: uploads.linear.app, ${hosts.join(', ')}`
+              : 'Attachment downloads restricted to uploads.linear.app',
+            'info'
+          );
         }
         return;
       }
@@ -1350,7 +1367,7 @@ export default async function piLinearToolsExtension(pi) {
 
       pi.sendMessage({
         customType: 'pi-linear-tools',
-        content: `Configuration:\n  LINEAR_API_KEY: ${hasKey ? 'configured' : 'not set'} (source: ${keySource})\n  Default workspace: ${settings.defaultWorkspace?.name || 'not set'}\n  Default team: ${settings.defaultTeam || 'not set'}\n  Rate limit debug: ${settings.rateLimitDebug ? 'enabled' : 'disabled'}\n  Allow overwrite files: ${settings.allow_overwrite_files ? 'enabled' : 'disabled'}\n  Project team mappings: ${Object.keys(settings.projects || {}).length}\n\nCommands:\n  /linear-tools-config --api-key lin_xxx\n  /linear-tools-config --default-team ENG\n  /linear-tools-config --team ENG --project MyProject\n  /linear-tools-config --rate-limit-debug true|false\n  /linear-tools-config --allow-overwrite-files true|false\n\nNote: environment LINEAR_API_KEY takes precedence over settings file.`,
+        content: `Configuration:\n  LINEAR_API_KEY: ${hasKey ? 'configured' : 'not set'} (source: ${keySource})\n  Default workspace: ${settings.defaultWorkspace?.name || 'not set'}\n  Default team: ${settings.defaultTeam || 'not set'}\n  Rate limit debug: ${settings.rateLimitDebug ? 'enabled' : 'disabled'}\n  Allow overwrite files: ${settings.allow_overwrite_files ? 'enabled' : 'disabled'}\n  Download allowed hosts: uploads.linear.app${(settings.download_allowed_hosts || []).length ? ', ' + settings.download_allowed_hosts.join(', ') : ''}\n  Project team mappings: ${Object.keys(settings.projects || {}).length}\n\nCommands:\n  /linear-tools-config --api-key lin_xxx\n  /linear-tools-config --default-team ENG\n  /linear-tools-config --team ENG --project MyProject\n  /linear-tools-config --rate-limit-debug true|false\n  /linear-tools-config --allow-overwrite-files true|false\n  /linear-tools-config --download-allowed-hosts host1,host2 (empty string resets)\n\nNote: environment LINEAR_API_KEY takes precedence over settings file.`,
         display: true,
       });
     },
@@ -1397,6 +1414,7 @@ export default async function piLinearToolsExtension(pi) {
           '  /linear-tools-config --team <team-key> --project <project-name-or-id>',
           '  /linear-tools-config --rate-limit-debug true|false',
           '  /linear-tools-config --allow-overwrite-files true|false',
+          '  /linear-tools-config --download-allowed-hosts host1,host2',
           '  /linear-tools-help',
           '  /linear-tools-reload',
           '',

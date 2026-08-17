@@ -42,6 +42,7 @@ Optional non-interactive commands:
 /linear-tools-config --default-team ENG
 /linear-tools-config --team ENG --project "My Project"
 /linear-tools-config --allow-overwrite-files true|false
+/linear-tools-config --download-allowed-hosts files.example.com,*.cdn.example.org
 ```
 
 ## Extension commands
@@ -72,7 +73,7 @@ Actions: `list`, `view`, `images`, `download`, `activity`, `create`, `update`, `
 
 `images` fetches image URLs embedded in issue markdown/comments and returns image content inline.
 
-`download` fetches Linear issue attachments only. Destination directories must be relative paths. Existing files are not overwritten unless both `overwrite: true` is provided and the config guard is enabled with `/linear-tools-config --allow-overwrite-files true`.
+`download` fetches Linear issue attachments only. By default only attachments hosted on `uploads.linear.app` can be downloaded; add other trusted hosts with `/linear-tools-config --download-allowed-hosts host1,*.suffix` (`download_allowed_hosts` setting). Local/private addresses are always refused and redirects are re-checked hop by hop. Destination directories must be relative paths without hidden (dot-prefixed) segments such as `.git` or `.pi`, and must not resolve outside the working directory via symlinks. Existing files are not overwritten unless both `overwrite: true` is provided and the config guard is enabled with `/linear-tools-config --allow-overwrite-files true`.
 
 `linear_issue` `list` accepts an optional `query` string to search issue titles and descriptions. It can be combined with the project, state, assignee, and team filters.
 
@@ -102,6 +103,7 @@ pi-linear-tools config --api-key lin_xxx
 pi-linear-tools config --default-team ENG
 pi-linear-tools config --team ENG --project "My Project"
 pi-linear-tools config --allow-overwrite-files true|false
+pi-linear-tools config --download-allowed-hosts files.example.com,*.cdn.example.org
 ```
 
 ### Issue commands
@@ -294,6 +296,12 @@ Settings path:
 
 Environment fallback:
 - `LINEAR_API_KEY` (takes precedence over settings)
+
+Security notes:
+- `settings.json` (may contain the API key), the OAuth token fallback file and the log file are created owner-only (`0600`, directories `0700`) and tightened on the next write if an older version left them world-readable.
+- OAuth tokens are stored in the OS keychain via `@github/keytar` when available; the plaintext fallback file `~/.pi/agent/extensions/pi-linear-tools/oauth-tokens.json` is only used when no keychain backend is reachable.
+- Credentials are never written to the log file: request tracking uses a hashed id and the logger redacts sensitive keys and `lin_api_`/`lin_oauth_` values.
+- Outbound fetches driven by Linear content (attachments, images embedded in issues/comments) refuse local/private/link-local targets and validate every redirect hop; the API credential is only ever sent to `uploads.linear.app`.
 
 Debug/diagnostics environment flags:
 - `PI_LINEAR_TOOLS_USAGE_SUMMARY=true` — append per-command Linear API usage summary to tool output markdown and include `details.apiUsage`

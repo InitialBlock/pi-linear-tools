@@ -6,6 +6,7 @@
   "defaultWorkspace": null,
   "rateLimitDebug": false,
   "allow_overwrite_files": false,
+  "download_allowed_hosts": [],
   "projects": {
     "97ec7cae-e252-493d-94d3-6910aa28cacf": {
       "scope": {
